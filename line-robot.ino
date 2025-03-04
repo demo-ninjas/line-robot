@@ -193,7 +193,7 @@ void setup() {
   // Assuming a successful connection to the WIFI, the Board will launch a small HTTP Server, so you can connect to the device and send commands to it via HTTP.
   // The Server will be listening on port 80, and you can add your own handlers to respond to different paths.
   // Here's an example HTTP Handler that will respond on the `/set-traffic-light` path by setting the state of the traffic light LEDs at the front of the board.
-  board->addHttpHandler("/set-traffic-light", [](WiFiClient* client, HttpRequest req) {
+  board->addHttpHandler("/set-traffic-light", [](WiFiClient* client, HttpRequest req, RobotBoard* board) {
     std::string msg = "Set Traffic Lights to: \n";
     bool red = false, yellow = false, green = false;
     if (req.query.find("red") != req.query.end()) {
@@ -255,24 +255,21 @@ void loop() {
   board->tick();
 
   // Step 1.5: Update the LEDs based on the IR sensor values (to provide a nice visual indication of the IR sensor values)
-  if (state->driveState() <= 10 && board->getTickCounter() & 0x01 == 1) {
-    int ir1_state = state->ir1 < state->ir1_soft_threshold;
-    int ir2_state = state->ir2 < state->ir2_soft_threshold;
-    int ir3_state = state->ir3 < state->ir3_soft_threshold;
-    int ir4_state = state->ir4 < state->ir4_soft_threshold;
-
-    board->setLED(6, ir1_state);
-    board->setLED(3, ir2_state);
-    board->setLED(4, ir3_state);
-    board->setLED(7, ir4_state);
+  if (state->driveState() <= 10 && board->getTickCounter() & 0x11 == 0x11) {
+    for (int i = 0; i < 4; i++) {
+      InfraredSensor* sensor = board->getIRSensor(i);
+      if (sensor->changed_in_last_update) {
+        board->setLED(sensor->indicator_led_num, sensor->triggered);
+      }
+    }
   }
 
   // Step 2: Perform Action (based on current State)
-  if (state->isIdle()) {                 // IDLE is when the robot is not doing anything
+  if (board ->getTickCounter() & 0x1 != 0x1) {                  // IDLE is when the robot is not doing anything
     idleActions();
-  } else if (state->isPrimed()) {        // PRIMED is when the button is pushed in - if you hold the button in it will remain in primed state until you release the button
+  } else if (state->isPrimed()) {                               // PRIMED is when the button is pushed in - if you hold the button in it will remain in primed state until you release the button
     primedActions();
-  } else if (state->isDriving()) {       // DRIVING, the robot is actively driving, so do whatever needs to be done to continue driving for this tick
+  } else if (state->isDriving()) {                              // DRIVING, the robot is actively driving, so do whatever needs to be done to continue driving for this tick
     drivingActions();
   }
 

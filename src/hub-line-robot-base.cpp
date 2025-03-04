@@ -15,6 +15,12 @@
 #include "libs/ACROBOTIC_SSD1306.h"
 #include "hub-line-robot-routes.h"
 
+/** Memory Free Function **/
+extern "C" char* sbrk(int incr);
+int freeRam() {
+  char top;
+  return &top - reinterpret_cast<char*>(sbrk(0));
+}
 
 /***********************************
  * RobotState Class Implementation *
@@ -22,6 +28,22 @@
  
 void noop() { /* */ }
 void noopLong(long) { /* */ }
+
+
+HttpResponse::HttpResponse() {
+    this->status = 200;
+    this->headers = std::map<String, String>();
+    this->headers["Content-Type"] = "text/plain";
+    this->body = "";
+}
+
+HttpRequest::HttpRequest() {
+    this->method = "GET";
+    this->path = "/";
+    this->body = "";
+    this->headers = std::map<String, String>();
+    this->query = std::map<String, String>();
+}
 
 RobotState::RobotState() {
     this->drive_state = 0;
@@ -34,10 +56,10 @@ RobotState::RobotState() {
     this->ir2_hard_threshold = 1200;
     this->ir3_hard_threshold = 1200;
     this->ir4_hard_threshold = 1200;
-    this->ir1_soft_threshold = 600;
-    this->ir2_soft_threshold = 600;
-    this->ir3_soft_threshold = 600;
-    this->ir4_soft_threshold = 600;
+    this->ir1_soft_threshold = 250;
+    this->ir2_soft_threshold = 250;
+    this->ir3_soft_threshold = 250;
+    this->ir4_soft_threshold = 250;
     this->ir1_raw = 0;
     this->ir2_raw = 0;
     this->ir3_raw = 0;
@@ -149,7 +171,7 @@ void RobotState::btnUp(bool enteringState, long duration, long timeInPrevState) 
   // Button was just released, let's consider whether this is a long press or not
   bool longPress = timeInPrevState > 1000;
 
-  // LOGGER.println("Button Up: D: " + String(duration) + "ms, TPrevS: " + String(timeInPrevState) + "ms, PrevUpTime: " + String(this->btn_prev_time_in_up) + "ms, LP: " + String(longPress) + ", ES: " + String(enteringState));
+  // this->logger.println("Button Up: D: " + String(duration) + "ms, TPrevS: " + String(timeInPrevState) + "ms, PrevUpTime: " + String(this->btn_prev_time_in_up) + "ms, LP: " + String(longPress) + ", ES: " + String(enteringState));
   // There are three cases to consider: 
   // 1. Button was pressed and released quickly (less than 400ms) - this is a short press
   // 2. Button was pressed and released after 1000ms - this is a long press
@@ -203,6 +225,64 @@ void RobotState::setOnDrivingEnd(std::function<void()> callback) { this->driving
  ***************************************/
  
 
+/***************************************
+ * InfraredSensor Class Implementation *
+ ***************************************/
+
+float smoothingFilter(float x, float y, float alpha) {
+  return alpha * x + (1 - alpha) * y;
+}
+
+InfraredSensor::InfraredSensor(ADS7828Channel* channel, int ir_led_num, int indicator_led_num, int baseline, int threshold, int hard_threshold) {
+    this->channel = channel;
+    this->channel->minScale = 0;
+    this->channel->maxScale = 0x0FFF;
+    this->ir_led_num = ir_led_num;
+    this->indicator_led_num = indicator_led_num;
+    this->baseline = baseline;
+    this->threshold = threshold;
+    this->hard_threshold = hard_threshold;
+    this->value = 0;
+    this->raw_value = 0;
+    this->triggered = false;
+    this->changed_in_last_update = false;
+}
+
+void InfraredSensor::update(bool updateChannel) {
+  if (this->channel == nullptr) {
+    Serial.println("Error: Cannot read IR values - ADC channel has not been initialized");
+    return;
+  }
+
+  if (updateChannel) {
+    uint8_t result = this->channel->update();
+    if (result != 0) {
+      std::string error = "Unknown Error";
+      if (result == 1) {
+        error = "Length too long for buffer";
+      } else if (result == 2) {
+        error = "Address send, NACK received (device not on bus)";
+      } else if (result == 3) {
+        error = "Data send, NACK received";
+      } else if (result == 4) {
+        error = "Other TWI error (lost bus arbitration, bus error, ...)";
+      }
+      Serial.println("Error: Cannot read IR values - ADC channel update failed [" + String(error.c_str()) + "]");
+      return;
+    }
+  }
+
+  int val = this->channel->value();
+  int diff = abs(val - this->raw_value);
+  if (diff > 4000 && this->raw_value > 1) {
+    val = smoothingFilter(val, this->raw_value, 0.5);
+  }  
+  this->raw_value = val;
+  this->value = val - this->baseline;
+  bool isTriggered = this->value < this->threshold;
+  this->changed_in_last_update = isTriggered != this->triggered;
+  this->triggered = isTriggered;
+}
 
 /************************************
  * Robot Board Class Implementation *
@@ -217,7 +297,7 @@ RobotBoard::~RobotBoard() {
 
 void RobotBoard::setSpeedOnBothMotors(int speed) {
   if (this->motor1 == nullptr || this->motor2 == nullptr) {
-    LOGGER.println("Error: Cannot set speed on the motors - one or both motors have not been initialized");
+    this->logger.println("Error: Cannot set speed on the motors - one or both motors have not been initialized");
       return;
   }
 
@@ -237,7 +317,7 @@ void RobotBoard::setSpeedOnBothMotors(int speed) {
 
 void RobotBoard::setMotorSpeedL(int speed) {
     if (this->motor1 == nullptr) {
-      LOGGER.println("Error: Cannot set speed on motor1 (Left Motor) - it has not been initialized");
+      this->logger.println("Error: Cannot set speed on motor1 (Left Motor) - it has not been initialized");
         return;
     }
 
@@ -253,7 +333,7 @@ void RobotBoard::setMotorSpeedL(int speed) {
 
 void RobotBoard::setMotorSpeedR(int speed) {
   if (this->motor2 == nullptr) {
-      LOGGER.println("Error: Cannot set speed on motor2 (Right Motor) - it has not been initialized");
+      this->logger.println("Error: Cannot set speed on motor2 (Right Motor) - it has not been initialized");
       return;
   }
 
@@ -272,8 +352,13 @@ int RobotBoard::motor2Speed() { return this->motor2_speed; }
 bool RobotBoard::isButtonPressed() { return digitalRead(this->BOARD_BUTTON) == LOW; }
 bool RobotBoard::isOLEDConnected() { return this->oled_type != OLED_TYPE_NONE; }
 
+int RobotBoard::availableMemory() {
+  return freeRam();
+}
+
+
 void RobotBoard::init_imu() {
-  LOGGER.println("IMU: Initialising...");
+  this->logger.println("IMU: Initialising...");
   imu->settings.adcEnabled = 0;           // Nothing is connected to the ADC pins
   imu->settings.tempEnabled = 0;          // Temp likely not needed
   imu->settings.accelSampleRate = 50;     // Hz.  Can be: 0,1,10,25,50,100,200,400,1600,5000 Hz
@@ -282,7 +367,7 @@ void RobotBoard::init_imu() {
   imu->settings.yAccelEnabled = 1;
   imu->settings.zAccelEnabled = 1;
   imu->begin();
-  LOGGER.println("IMU: Initialised + Ready!");
+  this->logger.println("IMU: Initialised + Ready!");
 }
 
 void RobotBoard::printOLEDHeader() {
@@ -307,7 +392,7 @@ void RobotBoard::printOLEDHeader() {
 }
 
 int RobotBoard::init_oled() {
-  LOGGER.println("OLED: Initialising");
+  this->logger.println("OLED: Initialising");
   if (this->oled_type == OLED_TYPE_GROVE) {
     SeeedOled.init();                             // Initialze SEEED OLED display
     SeeedOled.clearDisplay();                     // Clear the screen and set start position to top left corner
@@ -315,7 +400,7 @@ int RobotBoard::init_oled() {
     SeeedOled.setPageMode();                      // Set addressing mode to Page Mode
     this->clearOLED();
     this->printOLEDHeader();
-    LOGGER.println("OLED: Initialised + Ready!");
+    this->logger.println("OLED: Initialised + Ready!");
     return 3;   // The line number below the end of the header region
   } else if (this->oled_type == OLED_TYPE_SSD1306) {
     // 64x128
@@ -327,10 +412,10 @@ int RobotBoard::init_oled() {
     oled.setTextXY(0,0);              // Set cursor position, start of line 0
     this->clearOLED();
     this->printOLEDHeader();
-    LOGGER.println("OLED: Initialised + Ready!");
+    this->logger.println("OLED: Initialised + Ready!");
     return 3;   // The line number below the end of the header region
   } else {
-    LOGGER.println("Unsupported OLED Type: " + String(this->oled_type));
+    this->logger.println("Unsupported OLED Type: " + String(this->oled_type));
     return -1;
   }
 }
@@ -347,105 +432,32 @@ String padLeft(String str, const size_t num, const char padChar = ' ') {
 }
 
 
+uint16_t RobotBoard::getADCValue(int channel) {
+  if (this->adc == nullptr) {
+    this->logger.println("Error: Cannot read ADC value - ADC has not been initialized");
+    return 0;
+  }
+
+  this->adc->channel(channel)->update();
+  return this->adc->channel(channel)->value();
+}
+
 void RobotBoard::readAccelerometerData() {
   if (imu == nullptr) {
-    LOGGER.println("Error: Cannot read accelerometer data - IMU has not been initialized");
+    this->logger.println("Error: Cannot read accelerometer data - IMU has not been initialized");
     return;
   }
   
-  // // Read state of the IMU
+  // Read state of the IMU
   float accelX = imu->readFloatAccelX();
   float accelY = imu->readFloatAccelY();
   float accelZ = imu->readFloatAccelZ();
-  this->state->setPose(accelX, accelY, accelZ);
-
-  if (this->state->isIdle()) {
-    String x = padLeft(String((int)(accelX * 100)), 3, ' ');
-    String y = padLeft(String((int)(accelY * 100)), 3, ' ');
-    String z = padLeft(String((int)(accelZ * 100)), 3, ' ');
-    this->setOLEDLine(2, "Pose: " + x + ' ' + y + ' ' + z, false);
-  }
-}
-
-float smoothingFilter(float x, float y, float alpha) {
-  return alpha * x + (1 - alpha) * y;
+  this->state->setPose(accelX, accelY, accelZ);  
 }
 
 void RobotBoard::setIRLamps(bool on) {
-  if (on) {
-    this->setLED(8, true);
-    this->setLED(9, true);   
-    this->setLED(10, true);
-    this->setLED(11, true);
-  } else {
-    this->setLED(8, false);
-    this->setLED(9, false);
-    this->setLED(10, false);
-    this->setLED(11, false);
-  }
-}
-
-void RobotBoard::readIRValues() {
-  if (this->adc == nullptr) {
-    LOGGER.println("Error: Cannot read IR values - ADC has not been initialized");
-    return;
-  }
-
-  // Read the IR Values
-  int count = this->adc->updateAll();
-  if (count < 4) {
-    LOGGER.println("Error reading ADC Channels: " + String(count));
-    return;
-  }
-  int ir1Val = this->ir1Channel->value();
-  int ir2Val = this->ir2Channel->value();
-  int ir3Val = this->ir3Channel->value();
-  int ir4Val = this->ir4Channel->value();
-
-  // Compare the IR value to the previous read and if it's wildly different, smooth it out
-  int ir1Diff = abs(ir1Val - this->state->ir1_raw);
-  int ir2Diff = abs(ir2Val - this->state->ir2_raw);
-  int ir3Diff = abs(ir3Val - this->state->ir3_raw);
-  int ir4Diff = abs(ir4Val - this->state->ir4_raw);
-  if (ir1Diff > 4000 && this->state->ir1_raw > 1) {
-    ir1Val = smoothingFilter(ir1Val, this->state->ir1_raw, 0.5);
-  }
-  if (ir2Diff > 4000 && this->state->ir2_raw > 1) {
-    ir2Val = smoothingFilter(ir2Val, this->state->ir2_raw, 0.5);
-  }
-  if (ir3Diff > 4000 && this->state->ir3_raw > 1) {
-    ir3Val = smoothingFilter(ir3Val, this->state->ir3_raw, 0.5);
-  }
-  if (ir4Diff > 4000 && this->state->ir4_raw > 1) {
-    ir4Val = smoothingFilter(ir4Val, this->state->ir4_raw, 0.5);
-  }
-
-  // Save the IR Values
-  this->state->ir1_raw = ir1Val;
-  this->state->ir2_raw = ir2Val;
-  this->state->ir3_raw = ir3Val;
-  this->state->ir4_raw = ir4Val;
-
-  // Remove the Baseline from the IR Values
-  ir1Val -= this->ir1_baseline;
-  ir2Val -= this->ir2_baseline;
-  ir3Val -= this->ir3_baseline;
-  ir4Val -= this->ir4_baseline;
-
-  // Save the State
-  this->state->ir1 = ir1Val;
-  this->state->ir2 = ir2Val;
-  this->state->ir3 = ir3Val;
-  this->state->ir4 = ir4Val;
-
-  // Display the IR Values
-  if (this->state->isIdle()) {
-    String ir1 = padLeft(String(ir1Val), 4, ' ');
-    String ir2 = padLeft(String(ir2Val), 4, ' ');
-    String ir3 = padLeft(String(ir3Val), 4, ' ');
-    String ir4 = padLeft(String(ir4Val), 4, ' ');
-    String irVals = "IR: " + ir1 + " " + ir2 + " " + ir3 + " " + ir4;
-    this->setOLEDLine(1, irVals, false);
+  for (int i = 0; i < this->num_infrared_sensors; i++) {
+    this->setLED(this->irs[i]->ir_led_num, on);
   }
 }
 
@@ -456,7 +468,7 @@ void RobotBoard::startBaselining() {
 
   this->state->setState(20); // Move into Baselining Part 1
   this->setLED(5, false);
-  LOGGER.println("Starting Baselining...");
+  this->logger.println("Starting Baselining...");
   this->setIRLamps(true); // Ensure the IR lamps are on
 
   this->clearOLED();
@@ -471,7 +483,7 @@ void RobotBoard::startBaselining() {
 
 void RobotBoard::continueBaselining() {
   this->state->setState(21); // Move into Baselining Part 2
-  LOGGER.println("Continuing Baselining...");
+  this->logger.println("Continuing Baselining...");
   this->clearOLED();
   delay(200);
   this->setOLEDLine(-2, "BASELINING", true);
@@ -484,17 +496,15 @@ void RobotBoard::continueBaselining() {
   int ir4_sum = 0;
   int sum_count = 0;
   while (millis() - start < 2000) {
-    int count = this->adc->updateAll();
-    if (count < 4) {
-      LOGGER.println("Error reading ADC Channels: " + String(count));
-      delay(200);
-      continue;
+
+    for (int i = 0; i < this->num_infrared_sensors; i++) {
+      this->irs[i]->update(true);
     }
 
-    int ir1Val = this->ir1Channel->value();
-    int ir2Val = this->ir2Channel->value();
-    int ir3Val = this->ir3Channel->value();
-    int ir4Val = this->ir4Channel->value();
+    int ir1Val = this->irs[0]->raw_value;
+    int ir2Val = this->irs[1]->raw_value;
+    int ir3Val = this->irs[2]->raw_value;
+    int ir4Val = this->irs[3]->raw_value;
 
     ir1_sum += ir1Val;
     ir2_sum += ir2Val;
@@ -509,30 +519,30 @@ void RobotBoard::continueBaselining() {
   }
 
   if (sum_count > 0) {
-    this->ir1_baseline = ir1_sum / sum_count;
-    this->ir2_baseline = ir2_sum / sum_count;
-    this->ir3_baseline = ir3_sum / sum_count;
-    this->ir4_baseline = ir4_sum / sum_count;
+    this->irs[0]->baseline = ir1_sum / sum_count;
+    this->irs[1]->baseline = ir2_sum / sum_count;
+    this->irs[2]->baseline = ir3_sum / sum_count;
+    this->irs[3]->baseline = ir4_sum / sum_count;
   } else {
-    this->ir1_baseline = 0;
-    this->ir2_baseline = 0;
-    this->ir3_baseline = 0;
-    this->ir4_baseline = 0;
+    this->irs[0]->baseline = 0;
+    this->irs[1]->baseline = 0;
+    this->irs[2]->baseline = 0;
+    this->irs[3]->baseline = 0;
   }
     
   this->setOLEDLine(0, "BASELINE DONE", true);
-  this->setOLEDLine(1, "IR1: " + String(this->ir1_baseline), true);
-  this->setOLEDLine(2, "IR2: " + String(this->ir2_baseline), true);
-  this->setOLEDLine(3, "IR3: " + String(this->ir3_baseline), true);
-  this->setOLEDLine(4, "IR4: " + String(this->ir4_baseline), true);
-  LOGGER.println("Baselining Done!");
-  LOGGER.println("BASELINE IR1: " + String(this->ir1_baseline) + ", IR2: " + String(this->ir2_baseline) + ", IR3: " + String(this->ir3_baseline) + ", IR4: " + String(this->ir4_baseline));
+  this->setOLEDLine(1, "IR1: " + String(this->irs[0]->baseline), true);
+  this->setOLEDLine(2, "IR2: " + String(this->irs[1]->baseline), true);
+  this->setOLEDLine(3, "IR3: " + String(this->irs[2]->baseline), true);
+  this->setOLEDLine(4, "IR4: " + String(this->irs[3]->baseline), true);
+  this->logger.println("Baselining Done!");
+  this->logger.println("BASELINE IR1: " + String(this->irs[0]->baseline) + ", IR2: " + String(this->irs[1]->baseline) + ", IR3: " + String(this->irs[2]->baseline) + ", IR4: " + String(this->irs[3]->baseline));
   delay(2000);
   
-  this->state->ir1 = 0;
-  this->state->ir2 = 0;
-  this->state->ir3 = 0;
-  this->state->ir4 = 0;
+  this->irs[0]->value = 0;
+  this->irs[1]->value = 0;
+  this->irs[2]->value = 0;
+  this->irs[3]->value = 0;
   this->state->setState(0); // Move back to IDLE
 }
 
@@ -599,7 +609,7 @@ void RobotBoard::inner_init(RobotState* state, bool connect_wifi) {
         // Initialise the OLED Display
         this->oled_start_line = this->init_oled();
     } else {
-        LOGGER.println("NO OLED");
+        this->logger.println("NO OLED");
     }
 
     // Initialise the Shift Register
@@ -615,37 +625,30 @@ void RobotBoard::inner_init(RobotState* state, bool connect_wifi) {
     this->init_imu();
 
     // Init ADC Board
-    this->adc = new ADS7828(0, SINGLE_ENDED | REFERENCE_OFF | ADC_ON, 0b11111111);    
-    this->ir1Channel = this->adc->channel(0);
-    this->ir1Channel->minScale = 0;
-    this->ir1Channel->maxScale = 0x0FFF;
-    this->ir2Channel = this->adc->channel(1);
-    this->ir2Channel->minScale = 0;
-    this->ir2Channel->maxScale = 0x0FFF;
-    this->ir3Channel = this->adc->channel(2);
-    this->ir3Channel->minScale = 0;
-    this->ir3Channel->maxScale = 0x0FFF;
-    this->ir4Channel = this->adc->channel(3);
-    this->ir4Channel->minScale = 0;
-    this->ir4Channel->maxScale = 0x0FFF;
-    this->ir1_baseline = 0;
-    this->ir2_baseline = 0;
-    this->ir3_baseline = 0;
-    this->ir4_baseline = 0;
+    this->adc = new ADS7828(0, SINGLE_ENDED | REFERENCE_OFF | ADC_ON, 0b00001111);
+
+    InfraredSensor* ir1 = new InfraredSensor(this->adc->channel(0), 8, 6, 0, 400, 1500);
+    InfraredSensor* ir2 = new InfraredSensor(this->adc->channel(1), 9, 3, 0, 400, 1500);
+    InfraredSensor* ir3 = new InfraredSensor(this->adc->channel(2), 10, 4, 0, 400, 1500);
+    InfraredSensor* ir4 = new InfraredSensor(this->adc->channel(3), 11, 7, 0, 400, 1500);
+    this->irs[0] = ir1;
+    this->irs[1] = ir2;
+    this->irs[2] = ir3;
+    this->irs[3] = ir4;
     this->setIRLamps(true);
 
     // Connect to the network
     if (connect_wifi) {
       setArduinoRGB(255, 255, 0); // Set the RGB LED to YELLOW
-      int result = wifi_connect(2000);
+      int result = wifi_connect(3000);
       if (result == WL_CONNECTED) {
         setArduinoRGB(0, 200, 0); // Set the RGB LED to GREEN
         server.begin();                           // start the web server
         this->add_default_http_routes();
-        LOGGER.println("HTTP server started");
+        this->logger.println("HTTP server started");
       } else {
         setArduinoRGB(255, 0, 0); // Set the RGB LED to RED
-        LOGGER.println("Error connecting to WiFi: " + String(result));
+        this->logger.println("Error connecting to WiFi: " + String(result));
       }
 
       if (this->isOLEDConnected()) {
@@ -658,6 +661,14 @@ void RobotBoard::inner_init(RobotState* state, bool connect_wifi) {
     }
 }
 
+InfraredSensor* RobotBoard::getIRSensor(int index) {
+  if (index < 0 || index >= this->num_infrared_sensors) {
+    return nullptr;
+  }
+
+  return this->irs[index];
+}
+
 void RobotBoard::setTrafficLight(bool red, bool yellow, bool green) {
     this->setLED(0, red);
     this->setLED(1, yellow);
@@ -666,12 +677,15 @@ void RobotBoard::setTrafficLight(bool red, bool yellow, bool green) {
 
 void RobotBoard::setLED(int led, bool on) {
     if (led < 0 || led > 15) {
-        return;
+      this->logger.println("Error: Cannot set LED - Invalid LED number: " + String(led));
+      return;
     }
 
     if (on) {
+        // this->logger.println("Setting LED " + String(led) + " ON");
         this->sr.setPin(led, ON);
     } else {
+        // this->logger.println("Setting LED " + String(led) + " OFF");
         this->sr.setPin(led, OFF);
     }
 }
@@ -731,7 +745,7 @@ void RobotBoard::clearOLED() {
         oled.setTextXY(i, 0);
         oled.putString("                        ");
       }
-      // oled.clearDisplay(); // Doesn't work because the library we're using only clears the first 16 chars of each lie :[
+      // oled.clearDisplay(); // Doesn't work because the library we're using doesn't clear the whole screen
     }
   }
 }
@@ -754,7 +768,7 @@ void RobotBoard::onBtnPressed() {
 }
 
 void RobotBoard::onBtnLongPressed(long duration) {
-  // LOGGER.println("Button Long Pressed: " + String(duration));
+  // this->logger.println("Button Long Pressed: " + String(duration));
   if (this->state->isIdle()) {              // If we're in the IDLE state, then we should move to PRIMED
     this->state->setPrimed();
   } else if (this->state->isPrimed()) {     // If we're in the PRIMED state, then we should revert back to IDLE
@@ -777,14 +791,14 @@ long RobotBoard::getLastTickDuration() { return this->last_tick_duration; }
 long RobotBoard::getTickCounter() { return this->tick_counter; }
 
 void RobotBoard::tick() {
-    long start = millis();
+    long start = micros();
     this->tick_counter++;
     
-    if (this->tick_counter & 1 == 1) { // Only check the button every 2 ticks
+    if (this->tick_counter & 0x11 == 0x11) { // Only check the button every 4 ticks
       this->state->updateBtnState(digitalRead(this->BOARD_BUTTON));
     }
     
-    if (this->tick_counter % 20 == 0) { // Only handle HTTP server connections every 20 ticks
+    if (this->tick_counter % 25 == 0) { // Only handle HTTP server connections every 25 ticks (~4 times/s)
       this->handleServerConnections();
     }
     
@@ -794,14 +808,19 @@ void RobotBoard::tick() {
     
     this->updateSensorData();
 
-    long end = millis();
+    long end = micros();
     this->last_tick_duration = end - start;
 }
 
 void RobotBoard::updateSensorData() {
-  this->readIRValues();
-
-  if (this->tick_counter % 5 == 0) {  // Don't update the accelerometer every tick
+  if (this->tick_counter & 1 == 1) {      // Only update the IR sensors every other tick (and only one sensor at a time)
+    this->adc->updateAll();
+    for (int i = 0; i < this->num_infrared_sensors; i++) {
+      this->irs[i]->update(false);
+    }
+  }
+  
+  if (this->tick_counter % 20 == 0) {    // Only update every 20 ticks (~5 times/s) [also an even number to avoid doing this update on the same tick as the IR sensors]
     this->readAccelerometerData();
   }
 }
@@ -817,13 +836,13 @@ void RobotBoard::setArduinoRGB(int red, int green, int blue) {
 
 int wifi_connect(int timeout_millis) {
   if (WiFi.status() == WL_NO_MODULE) {
-    LOGGER.println("No Wifi module available - cannot connect to Wifi");
+    Serial.println("No Wifi module available - cannot connect to Wifi");
     return WL_NO_MODULE;
   }
 
   // Check if SECRET_SSID and SECRET_PASS are defined
   if (SECRET_SSID == nullptr || SECRET_PASS == nullptr) {
-    LOGGER.println("Wifi SSID and/or Password not defined - cannot connect to Wifi - please ensure you have defined them in the arduino_secrets.h file");
+    Serial.println("Wifi SSID and/or Password not defined - cannot connect to Wifi - please ensure you have defined them in the arduino_secrets.h file");
     return WL_CONNECT_FAILED;
   }
 
@@ -831,7 +850,7 @@ int wifi_connect(int timeout_millis) {
   char pass[] = SECRET_PASS;        // Network password
   int status = WL_IDLE_STATUS;      // Wifi radio's status
   long start = millis();
-  LOGGER.println("Connecting to Wifi Network: " + String(ssid));
+  Serial.println("Connecting to Wifi Network: " + String(ssid));
   while (status != WL_CONNECTED && millis() - start < timeout_millis) {
     // Connect to WPA/WPA2 network:
     status = WiFi.begin(ssid, pass);
@@ -840,13 +859,13 @@ int wifi_connect(int timeout_millis) {
     } else {
       IPAddress ip = WiFi.localIP();
       long rssi = WiFi.RSSI();
-      LOGGER.println("WIFI CONNECTED; IP: " + ip.toString() + "; RSSI: " + String(rssi));
+      Serial.println("WIFI CONNECTED; IP: " + ip.toString() + "; RSSI: " + String(rssi));
     }
   }
   return status;
 }
 
-void RobotBoard::addHttpHandler(String path, std::function<HttpResponse(WiFiClient*, HttpRequest)> handler) {
+void RobotBoard::addHttpHandler(String path, std::function<HttpResponse(WiFiClient*, HttpRequest&, RobotBoard*)> handler) {
   this->httpHandlers[path] = handler;
 }
 
@@ -883,16 +902,32 @@ std::vector<std::string> split(const std::string& str, char delimiter) {
 
 void RobotBoard::handleServerConnections() {
   // Check for any new client - and add it to the client slots if one is available (we're only supporting 8 clients at a time)
-  // LOGGER.println("Will check for new clients...");
+  // if (this->debug) {
+  //   this->logger.println("Will check for new HTTP clients...");
+  // }
 
   WiFiClient newClient = server.accept();
   if (newClient) {
-    // LOGGER.println("New client found...");
+    // this->logger.println("New client found...");
+
+    // Check if we have space for the new client
+    if (this->availableMemory() < 4096) { // Require at least 4KB of memory to handle the new client
+      newClient.println("HTTP/1.1 503 Server Out of Resources");
+      newClient.println("Connection: close");
+      newClient.println("Content-Length: 0");
+      newClient.println();
+      newClient.stop();
+      return;
+    }
+
     bool found = false;
     for (byte i=0; i < MAX_SERVER_CLIENTS; i++) {
       if (!this->serverClients[i]) {
         // Found a slot for the new client...
         this->serverClients[i] = newClient;
+        if (this->debug) {
+          this->logger.println("New client connected [" + String(i) + "]");
+        }
         found = true;
         break;
       }
@@ -911,17 +946,17 @@ void RobotBoard::handleServerConnections() {
   for (byte i=0; i < MAX_SERVER_CLIENTS; i++) {
     if (this->serverClients[i] && this->serverClients[i].available() > 0) {
       const char *method, *path;
-      std::vector<byte> buf(4096);  
+      std::vector<byte> buf(2048);  
       int parse_result = 0, minor_version;
-      struct phr_header headers[100];
+      struct phr_header headers[25];
       size_t buflen = 0, prevbuflen = 0, method_len, path_len, num_headers;
 
       while (parse_result <= 0) {
-        byte tmpBuf[4096];
-        int read_result = this->serverClients[i].read(tmpBuf, 4096);
+        byte tmpBuf[2048];
+        int read_result = this->serverClients[i].read(tmpBuf, 2048);
         if (read_result == -1) {
             // IOError - so print to serial and stop the client
-            LOGGER.println("Error reading from HTTP client [" + String(i) + "] - will stop client");
+            this->logger.println("Error reading from HTTP client [" + String(i) + "] - will stop client");
             this->serverClients[i].stop(); 
         } else if (read_result == 0) {
             continue; // No data read - move onto the next client
@@ -945,7 +980,7 @@ void RobotBoard::handleServerConnections() {
         parse_result = phr_parse_request(buf_char, buflen, &method, &method_len, &path, &path_len, &minor_version, headers, &num_headers, prevbuflen);
         if (parse_result == -1) {
             // Failed to parse the request, respond with a 400 Bad Request
-            LOGGER.println("Failed to parse the request from HTTP client [" + String(i) + "] - will respond with a 400 Bad Request");
+            this->logger.println("Failed to parse the request from HTTP client [" + String(i) + "] - will respond with a 400 Bad Request");
             this->serverClients[i].println("HTTP/1.1 400 Bad Request");
             this->serverClients[i].println("Content-Type: text/plain");
             this->serverClients[i].println("Connection: close");
@@ -969,7 +1004,7 @@ void RobotBoard::handleServerConnections() {
 
       if (buflen == sizeof(buf)) {
           // Request is too long, respond with a 413 Payload Too Large
-          LOGGER.println("Request from HTTP client [" + String(i) + "] is too large - will respond with a 413 Payload Too Large");
+          this->logger.println("Request from HTTP client [" + String(i) + "] is too large - will respond with a 413 Payload Too Large");
           this->serverClients[i].println("HTTP/1.1 413 Payload Too Large");
           this->serverClients[i].println("Content-Type: text/plain");
           this->serverClients[i].println("Connection: close");
@@ -1010,29 +1045,29 @@ void RobotBoard::handleServerConnections() {
         req.headers[String(headers[h].name, headers[h].name_len)] = String(headers[h].value, (int)headers[h].value_len);
       }
 
+     
       // Write some debugging info to the serial port
       if (this->debug) {
-        LOGGER.println("New Request: [HTTP Client " + String(i) + "]");
-        LOGGER.println("  Method: " + req.method);
-        LOGGER.println("  Path: " + req.path);
-        LOGGER.println("  Query Params: ");
+        this->logger.println("New Request: [HTTP Client " + String(i) + "]");
+        this->logger.println("  Method: " + req.method);
+        this->logger.println("  Path: " + req.path);
+        this->logger.println("  Query Params: ");
         for (auto const& [key, val] : req.query) {
-          LOGGER.println("    " + key + ": " + val);
+          this->logger.println("    " + key + ": " + val);
         }
-        LOGGER.println("  Headers: ");
+        this->logger.println("  Headers: ");
         for (auto const& [key, val] : req.headers) {
-          LOGGER.println("    " + key + ": " + val);
+          this->logger.println("    " + key + ": " + val);
         }
         if (req.body.length() > 0)
-          LOGGER.println("  Body: " + req.body);
-        LOGGER.println("---");
+          this->logger.println("  Body: " + req.body);
+        this->logger.println("---");
       }
 
       // Look for a request handler for the path
       if (this->httpHandlers.find(req.path) != this->httpHandlers.end()) {
         // Pass the request to the handler
-        HttpResponse response = this->httpHandlers[req.path](&this->serverClients[i], req);
-
+        HttpResponse response = this->httpHandlers[req.path](&this->serverClients[i], req, this);
         // Write the response to the client
         this->serverClients[i].println("HTTP/1.1 " + String(response.status));
         for (auto const& [key, val] : response.headers) {
@@ -1044,10 +1079,16 @@ void RobotBoard::handleServerConnections() {
         this->serverClients[i].println("Content-Length: " + String(total_bytes));
         this->serverClients[i].println();
         long start = millis();
-        size_t write_batch_length = 1024;
+        size_t write_batch_length = 512;
         while (bytes_written < total_bytes) {
           size_t chunk_size = min(write_batch_length, total_bytes - bytes_written);
           size_t written = this->serverClients[i].write(response.body.c_str() + bytes_written, chunk_size);
+          if (written == 0) {
+            // Error writing to the socket - stop the client
+            this->logger.println("Error writing response to HTTP client [" + String(i) + "] - will stop client");
+            this->serverClients[i].stop();
+            break;
+          }
           bytes_written += written;
         
           if (bytes_written == total_bytes) {
@@ -1056,11 +1097,13 @@ void RobotBoard::handleServerConnections() {
           }
 
           if (millis() - start > 1000) {  // Too long - give up - we don't want to waste time here writing to the socket - and 1s is already too long!!
-            LOGGER.println("Timeout writing response to HTTP client [" + String(i) + "] - will stop client");
+            this->logger.println("Timeout writing response to HTTP client [" + String(i) + "] - will stop client");
             this->serverClients[i].stop();
             break;
           }
         }
+
+        this->serverClients[i].stop();
       } else if (req.path.length() == 1 && req.path[0] == '/') {
         // Respond with a default response
         String response_text = "<html><head><title>Innovation Hub - Line Robot</title></head><body><h1>Hello!</h1><h3>You're connected to the Robot!</h3></body></html>";
@@ -1083,7 +1126,7 @@ void RobotBoard::handleServerConnections() {
   for (byte i=0; i < MAX_SERVER_CLIENTS; i++) {
     if (this->serverClients[i] && !this->serverClients[i].connected()) {
       if (this->debug) {
-        LOGGER.println("Client [" + String(i) + "] disconnected");
+        this->logger.println("Client [" + String(i) + "] disconnected");
       }
       this->serverClients[i].stop();
     }
@@ -1134,21 +1177,21 @@ int wifi_scan() {
   Serial.print("Scanning Wifi Networks...");
     int numSsid = WiFi.scanNetworks();
     if (numSsid == 0) {
-      LOGGER.println("None Found");
+      Serial.println("None Found");
       return 0;
     } else if (numSsid == -1) {
-      LOGGER.println("Failed");
+      Serial.println("Failed");
       return 0;
     }
 
-    LOGGER.println(String(numSsid) + " Networks Found");
+    Serial.println(String(numSsid) + " Networks Found");
     for (int i = 0; i < numSsid; i++) {
       Serial.print(i);
       Serial.print(". ");
       Serial.print(WiFi.SSID(i));
       Serial.print("\tSignal: ");
       Serial.print(WiFi.RSSI(i));
-      LOGGER.println(" dBm");
+      Serial.println(" dBm");
     }
 
   return numSsid;
@@ -1169,7 +1212,7 @@ String wifi_ssid(int index) {
  * Scans the I2C Bus for Devices and prints out the addresses of the devices found
  */
 int scan_i2c() {
-  LOGGER.println("Scanning I2C Bus for Devices...");
+  Serial.println("Scanning I2C Bus for Devices...");
   int nDevices = 0;
   for(int address = 1; address < 127; address++ ) {
     delayMicroseconds(50);
@@ -1183,18 +1226,18 @@ int scan_i2c() {
       Serial.print(address, HEX);
       Serial.print(" (");
       Serial.print(address);
-      LOGGER.println(")");
+      Serial.println(")");
       nDevices++;
     } else if (error==4) {
       Serial.print("Unknown error at address 0x");
       if (address<16)
         Serial.print(F("0"));
-      LOGGER.println(address,HEX);
+        Serial.println(address,HEX);
     }
   }
 
   if (nDevices == 0)
-    LOGGER.println("No I2C devices found\n");
+    Serial.println("No I2C devices found\n");
   
   return nDevices;
 }

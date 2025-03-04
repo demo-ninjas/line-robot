@@ -79,7 +79,7 @@ Next, grab some dupont wires and connect the Micro OLED to the **3.3v** I2C pins
 Next, head over to the hardware table, grab a screwdriver and a wire stripper. 
 You want to strip the ends of the DC Motor wires, and then connect them to the two Motor screw terminals on the sides of the board (don't connect them to the power terminal at the back of the board).
 
-Whilst it doesn't matter too how you orient the wires in the terminals, We recommend putting the red wire towards the front of the board on the Motor 2 terminal (right hand side), and the towards the back of the board on the Motor 1 terminal (left hand side).
+Whilst it doesn't matter too how you orient the wires in the terminals, We recommend putting the red wire towards the front of the board on both sides.
 
 Next, we need some power for the board, let's not waste the battery for now, so, connect a usb-c cable to the back of the development board (be sure to use a charger that supports a 15v or 20v USB connection. For our purposes there is a laptop-grade battery pack provided).
 

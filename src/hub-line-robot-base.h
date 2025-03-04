@@ -38,8 +38,6 @@
 
 #define MAX_SERVER_CLIENTS 4
 
-static SerialProxy LOGGER = SerialProxy(20);
-
 /**
  * Base class for holding the Robot State.
  * 
@@ -139,6 +137,7 @@ class HttpRequest {
     String body;
     std::map<String, String> headers;
     std::map<String, String> query;
+    HttpRequest();
 };
 
 class HttpResponse {
@@ -146,7 +145,27 @@ class HttpResponse {
     int status;
     String body;
     std::map<String, String> headers;
+
+    HttpResponse();
 };
+
+class InfraredSensor {
+  public: 
+    int value;
+    int raw_value;
+    int baseline;
+    int threshold;
+    int hard_threshold;
+    ADS7828Channel* channel;
+    bool triggered;
+    bool changed_in_last_update;
+    int ir_led_num;
+    int indicator_led_num;
+
+    InfraredSensor(ADS7828Channel* channel, int ir_led_num, int indicator_led_num, int baseline, int threshold, int hard_threshold);
+    void update(bool updateChannel);
+};
+
 
 /**
  * Main class for managing the Robot Board.
@@ -156,8 +175,8 @@ class HttpResponse {
 class RobotBoard { 
     protected: 
         RobotState* state;
-        long tick_counter = 0;
-        long last_tick_duration = 0;
+        unsigned long tick_counter = 0;
+        unsigned long last_tick_duration = 0;
 
         DCMotor* motor1;
         DCMotor* motor2;  
@@ -166,16 +185,9 @@ class RobotBoard {
 
         LIS3DH* imu;
         ADS7828* adc;
-        ADS7828Channel* ir1Channel;
-        ADS7828Channel* ir2Channel;
-        ADS7828Channel* ir3Channel;
-        ADS7828Channel* ir4Channel;
         
-        int ir1_baseline = 300;
-        int ir2_baseline = 300;
-        int ir3_baseline = 300;
-        int ir4_baseline = 300;
-
+        InfraredSensor* irs[4];
+        uint8_t num_infrared_sensors = 4;
         int adc_address;
 
         HC595  sr = HC595(2, 1, 10, 0); // (chips, latch, clock, data)
@@ -185,11 +197,11 @@ class RobotBoard {
 
         WiFiServer server = WiFiServer(80);
         WiFiClient* serverClients = new WiFiClient[MAX_SERVER_CLIENTS];
-        std::map<String, std::function<HttpResponse(WiFiClient*, HttpRequest)>> httpHandlers;
+        std::map<String, std::function<HttpResponse(WiFiClient*, HttpRequest&, RobotBoard*)>> httpHandlers;
+        
 
         int init_oled();
         void init_imu();
-        void readIRValues();
         int readIRSignal(ADS7828Channel* channel, int led);
         void readAccelerometerData();
         void handleServerConnections();
@@ -211,7 +223,8 @@ class RobotBoard {
         int MOTOR_2_EN;
         int BOARD_BUTTON;
 
-        bool debug = false;
+        bool debug = true;
+        SerialProxy logger = SerialProxy(10);
 
         RobotBoard(){};
 
@@ -225,6 +238,13 @@ class RobotBoard {
          * You should call this function at the start of your main loop.
          */
         void tick();
+
+        /**
+         * Get the amount of free memory available on the board.
+         * 
+         * @return The amount of free memory available
+         */
+        int availableMemory();
 
         /**
          * Get the current tick counter.
@@ -343,6 +363,10 @@ class RobotBoard {
          */
         void updateSensorData();
 
+        InfraredSensor* getIRSensor(int sensor);
+
+        uint16_t getADCValue(int channel);
+
         /**
          * Set the state of the Robot State object.
          * 
@@ -418,7 +442,7 @@ class RobotBoard {
          * @param path The path to respond to
          * @param handler The function to call when a request is made to the specified path
          */
-        void addHttpHandler(String path, std::function<HttpResponse(WiFiClient*, HttpRequest)> handler);
+        void addHttpHandler(String path, std::function<HttpResponse(WiFiClient*, HttpRequest&, RobotBoard*)> handler);
 };
 
 /**
@@ -456,5 +480,9 @@ NB: You must first call the wifi_scan() function to do an initial scan before yo
 String wifi_ssid(int index);
 
 
+/**
+ * Returns a string that is left padded with the specified character, constrained to the specified length.
+ */
+String padLeft(String str, const size_t num, const char padChar);
 
 #endif  // HubLineRobotBase_h
